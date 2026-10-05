@@ -26,4 +26,4 @@ jobs:
       manifest_file: immortalwrt-qualcommax-ipq60xx.manifest
       delete_old_workflows: false
       release_summary: >-
-        这是京东云雅典娜 RE-CS-02 的 6.12 内核 NSS 固件，默认主题为 Aurora；内置软件包包括 cpufreq、ddns、upnp、wol、samba4、vlmcsd、aria2、autoreboot、uhttpd、frps、frpc、diskman、hd-idle、acme、openlist2、wireguard、watchcat、3cat 和 gecoosac。PassWall2、Xray 与 Sing-Box 作为可选安装包收录在 Packages.tar.gz 中，刷机后可手动安装；详见 JDCloud.config 和 General.config。
+        这是京东云雅典娜 RE-CS-02 的 6.12 内核 NSS 固件，默认主题为 Aurora；内置软件包包括 cpufreq、ddns、upnp、wol、samba4、vlmcsd、aria2、autoreboot、uhttpd、diskman、hd-idle、acme、openlist2、wireguard、watchcat、3cat 和 gecoosac。PassWall2、Xray 与 Sing-Box 作为可选安装包收录在 Packages.tar.gz 中，刷机后可手动安装；详见 JDCloud.config 和 General.config。
