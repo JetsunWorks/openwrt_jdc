@@ -120,4 +120,3 @@ git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-open
 
 ./scripts/feeds update -i -a
 ./scripts/feeds install -a
-没事
