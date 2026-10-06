@@ -72,6 +72,11 @@ jobs:
           grep -Fxq 'CONFIG_USE_APK=y' .config
           grep -Fxq 'CONFIG_VERSION_NUMBER="25.12.2-nss"' .config
           ! grep -Eq '^CONFIG_PACKAGE_(frpc|frps|luci-app-frpc|luci-app-frps|luci-app-passwall2|xray-core|sing-box)=[ym]$' .config
+          if grep -Eq '^CONFIG_PACKAGE_(kmod-nft-compat|kmod-nf-ipt)=[ym]$' .config; then
+            echo 'Unexpected legacy nft/iptables compatibility package selected.'
+            grep -E '^CONFIG_PACKAGE_(kmod-nft-compat|kmod-nf-ipt)=[ym]$' .config
+            exit 1
+          fi
           cp .config "$GITHUB_WORKSPACE/artifacts/diagnostics/config.full"
           ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/artifacts/diagnostics/config.diff"
           cp "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt" files/etc/nss-build-info
@@ -111,10 +116,11 @@ jobs:
               'nss-firmware-ipq60xx', 'kmod-ath11k', 'kmod-ath11k-pci',
               'ath11k-firmware-ipq6018', 'ath11k-firmware-qcn9074',
               'ipq-wifi-jdcloud_re-cs-02', 'luci-app-cpufreq', 'luci-app-ddns',
-              'luci-app-upnp', 'luci-app-wol', 'apk-mbedtls',
+              'luci-app-upnp', 'luci-app-wol', 'luci-app-nlbwmon',
+              'luci-i18n-nlbwmon-zh-cn', 'apk-mbedtls',
               'kmod-nft-tproxy', 'kmod-nft-socket', 'kmod-tun'}
           assert required <= packages, required - packages
-          forbidden = {'frpc','frps','luci-app-frpc','luci-app-frps','luci-app-passwall2','xray-core','sing-box'}
+          forbidden = {'frpc','frps','luci-app-frpc','luci-app-frps','luci-app-passwall2','xray-core','sing-box','kmod-nft-compat','kmod-nf-ipt'}
           assert not forbidden & packages, forbidden & packages
           kernels = [line for line in lines if line.startswith('kernel - ')]
           assert len(kernels) == 1 and '6.12.103' in kernels[0], kernels
@@ -131,12 +137,15 @@ jobs:
           Formal release userspace/feeds and Linux 6.12.103 are retained.
           NSS, Wi-Fi backports 7.2, matched firmware and board support are ported
           from the fixed donor recorded in SOURCES.txt, not a relabeled Snapshot.
-          Built-ins: cpufreq, DDNS, UPnP, WoL, NSS and proxy kernel prerequisites.
+          Built-ins: cpufreq, DDNS, UPnP, WoL, Netlink Bandwidth Monitor, NSS and native nftables proxy prerequisites.
           PassWall2, Xray, Sing-Box, frpc/frps are not included.
           No optional-package bundle is compiled or published.
           APK uses official 25.12.2 userspace feeds. Official target/kernel feed
           is disabled because NSS changes the kernel ABI. PassWall2 needs its
-          project's compatible third-party source.
+          project's APK-compatible third-party source. Native nft tproxy/socket
+          and tun support are included; legacy nft/iptables compatibility is
+          omitted because its old ip_tables.ko is absent in this kernel build.
+          Netlink Bandwidth Monitor is included as luci-app-nlbwmon.
           Layout: Athena eMMC 0:HLOS + rootfs. The owner's stock JDCOS GPT has
           not been read: verify it before first flash. Hardware boot/NSS must
           still be tested. Read factory/sysupgrade/initramfs instructions before use.
@@ -162,8 +171,9 @@ jobs:
             京东云雅典娜 RE-CS-02，基于 ImmortalWrt v25.12.2 正式版的 NSS 定制固件，Linux 6.12.103。
             正式版源码 4fc16f2985a358bd43bb522e43f05395fcbd6ed5；NSS donor 0a98e096208584bf90982f59f6d5a43f89443276。
             NSS/ECM、PPPoE、桥接/VLAN、ath11k Wi-Fi NSS；内置 cpufreq、DDNS、UPnP、WoL。
-            不包含 PassWall2、Xray、Sing-Box、frpc/frps，不发布可选软件包合集。
+            内置 luci-app-nlbwmon。PassWall2、Xray、Sing-Box、frpc/frps 不包含，不发布可选软件包合集。
             APK 保留官方 25.12.2 用户态源，NSS 内核 ABI 与官方 kmod 不兼容。PassWall2 需其项目源。
+            内置 nft tproxy/socket 与 tun；省略旧式 nft/iptables compat，避免打包缺失的 ip_tables.ko。
             包含 factory、sysupgrade、initramfs 镜像；实机验证尚未完成，首次刷机前核对官方 GPT。
             构建记录：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
             详见 READ-ME.txt、SOURCES.txt、manifest、配置、SHA256SUMS。
