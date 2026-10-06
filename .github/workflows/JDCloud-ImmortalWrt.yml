@@ -56,11 +56,15 @@ jobs:
           cp "$SOURCE_PATH/.config" artifacts/diagnostics/config.seed
           cd "$SOURCE_PATH"
           make defconfig
+          cp .config "$GITHUB_WORKSPACE/artifacts/diagnostics/config.full"
+          ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/artifacts/diagnostics/config.diff"
+          missing=0
           while IFS= read -r requested; do
             if [[ "$requested" == CONFIG_*=y ]]; then
-              grep -Fxq "$requested" .config || { echo "Dropped requested option: $requested"; exit 1; }
+              grep -Fxq "$requested" .config || { echo "Dropped requested option: $requested"; missing=1; }
             fi
           done < "$GITHUB_WORKSPACE/artifacts/diagnostics/config.seed"
+          test "$missing" -eq 0
           if grep -Eq '^CONFIG_PACKAGE_.*=m$' .config; then
             grep -E '^CONFIG_PACKAGE_.*=m$' .config
             exit 1
