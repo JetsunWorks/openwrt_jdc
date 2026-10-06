@@ -3,27 +3,163 @@ name: JDCloud-ImmortalWrt
 on:
   workflow_dispatch:
   workflow_call:
-  # schedule:
-  #   - cron: "0 18 * * *"
 
 permissions:
   contents: read
-  actions: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: jdcloud-stable-nss-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  SOURCE_PATH: /mnt/immortalwrt-stable
+  TZ: Asia/Shanghai
 
 jobs:
-  Build:
-    uses: ./.github/workflows/Build-OpenWrt.yml
+  build:
+    name: Athena / ImmortalWrt 25.12.2 release + NSS / Linux 6.12.103
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     permissions:
       contents: write
-      actions: write
-    with:
-      repo_url: https://github.com/laipeng668/immortalwrt.git
-      repo_branch: openwrt-25.12
-      config_file: configs/JDCloud.config
-      firmware_tag: JDCloud
-      kernel_file: kernel-6.12
-      artifact_prefix: Arthur.Athena
-      manifest_file: immortalwrt-qualcommax-ipq60xx.manifest
-      delete_old_workflows: false
-      release_summary: >-
-        这是京东云雅典娜 RE-CS-02 的 6.12 内核 NSS 固件，默认主题为 Aurora；内置软件包包括 cpufreq、ddns、upnp、wol、samba4、vlmcsd、aria2、autoreboot、uhttpd、diskman、hd-idle、acme、openlist2、wireguard、watchcat、3cat 和 gecoosac。PassWall2、Xray 与 Sing-Box 作为可选安装包收录在 Packages.tar.gz 中，刷机后可手动安装；详见 JDCloud.config 和 General.config。
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev libelf-dev zlib1g-dev liblzma-dev python3 python3-setuptools python3-pyelftools rsync swig unzip file wget curl ca-certificates time ccache zstd device-tree-compiler quilt patch pkgconf jq
+          sudo mkdir -p "$SOURCE_PATH"
+          sudo chown "$(id -u):$(id -g)" "$SOURCE_PATH"
+          mkdir -p artifacts/firmware artifacts/diagnostics
+          df -h "$SOURCE_PATH"
+      - name: Port pinned NSS and Athena support onto the formal release
+        run: bash scripts/prepare-stable-nss.sh "$SOURCE_PATH"
+      - name: Install pinned release feeds and NSS feed
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          for feed in feeds/*; do
+            if [[ -d "$feed/.git" ]]; then
+              printf '%s %s\n' "$feed" "$(git -C "$feed" rev-parse HEAD)"
+            fi
+          done >> "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt"
+      - name: Configure and check required features
+        run: |
+          set -euo pipefail
+          cat configs/JDCloud-Stable.config configs/Stable-General.config > "$SOURCE_PATH/.config"
+          cp "$SOURCE_PATH/.config" artifacts/diagnostics/config.seed
+          cd "$SOURCE_PATH"
+          make defconfig
+          while IFS= read -r requested; do
+            if [[ "$requested" == CONFIG_*=y ]]; then
+              grep -Fxq "$requested" .config || { echo "Dropped requested option: $requested"; exit 1; }
+            fi
+          done < "$GITHUB_WORKSPACE/artifacts/diagnostics/config.seed"
+          if grep -Eq '^CONFIG_PACKAGE_.*=m$' .config; then
+            grep -E '^CONFIG_PACKAGE_.*=m$' .config
+            exit 1
+          fi
+          grep -Fxq 'CONFIG_USE_APK=y' .config
+          grep -Fxq 'CONFIG_VERSION_NUMBER="25.12.2-nss"' .config
+          ! grep -Eq '^CONFIG_PACKAGE_(frpc|frps|luci-app-frpc|luci-app-frps|luci-app-passwall2|xray-core|sing-box)=[ym]$' .config
+          cp .config "$GITHUB_WORKSPACE/artifacts/diagnostics/config.full"
+          ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/artifacts/diagnostics/config.diff"
+          cp "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt" files/etc/nss-build-info
+      - name: Download sources
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          make download -j8 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/download.log"
+      - name: Validate patches against the release kernel
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          make target/linux/prepare -j"$(nproc)" V=s 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/kernel-prepare.log"
+      - name: Build firmware
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          if ! make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/build.log"; then
+            make -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/build-retry.log"
+          fi
+      - name: Verify and collect firmware
+        run: |
+          set -euo pipefail
+          image_dir="$SOURCE_PATH/bin/targets/qualcommax/ipq60xx"
+          python3 - "$image_dir" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          metadata = json.loads((root / 'profiles.json').read_text())
+          assert metadata['version_number'] == '25.12.2-nss', metadata['version_number']
+          profile = metadata['profiles']['jdcloud_re-cs-02']
+          assert any(image['type'] == 'sysupgrade' for image in profile['images'])
+          manifests = list(root.glob('*.manifest'))
+          assert len(manifests) == 1, manifests
+          lines = manifests[0].read_text().splitlines()
+          packages = {line.split(' - ')[0] for line in lines}
+          required = {'kmod-qca-nss-drv', 'kmod-qca-nss-ecm', 'kmod-qca-nss-dp',
+              'nss-firmware-ipq60xx', 'kmod-ath11k', 'kmod-ath11k-pci',
+              'ath11k-firmware-ipq6018', 'ath11k-firmware-qcn9074',
+              'ipq-wifi-jdcloud_re-cs-02', 'luci-app-cpufreq', 'luci-app-ddns',
+              'luci-app-upnp', 'luci-app-wol', 'apk-mbedtls',
+              'kmod-nft-tproxy', 'kmod-nft-socket', 'kmod-tun'}
+          assert required <= packages, required - packages
+          forbidden = {'frpc','frps','luci-app-frpc','luci-app-frps','luci-app-passwall2','xray-core','sing-box'}
+          assert not forbidden & packages, forbidden & packages
+          kernels = [line for line in lines if line.startswith('kernel - ')]
+          assert len(kernels) == 1 and '6.12.103' in kernels[0], kernels
+          images = list(root.glob('*jdcloud_re-cs-02*'))
+          assert any(p.name.endswith('-sysupgrade.bin') for p in images)
+          assert any(p.name.endswith('-factory.bin') for p in images)
+          assert any('initramfs' in p.name and p.suffix == '.itb' for p in images)
+          print('Verified formal release baseline, kernel, NSS, Wi-Fi, built-ins and exclusions.')
+          PY
+          find "$image_dir" -maxdepth 1 -type f -exec cp {} artifacts/firmware/ \;
+          cp artifacts/diagnostics/SOURCES.txt artifacts/diagnostics/config.diff artifacts/firmware/
+          cat > artifacts/firmware/READ-ME.txt <<'EOF'
+          JDCloud Athena RE-CS-02: custom NSS build based on ImmortalWrt v25.12.2.
+          Formal release userspace/feeds and Linux 6.12.103 are retained.
+          NSS, Wi-Fi backports 7.2, matched firmware and board support are ported
+          from the fixed donor recorded in SOURCES.txt, not a relabeled Snapshot.
+          Built-ins: cpufreq, DDNS, UPnP, WoL, NSS and proxy kernel prerequisites.
+          PassWall2, Xray, Sing-Box, frpc/frps are not included.
+          No optional-package bundle is compiled or published.
+          APK uses official 25.12.2 userspace feeds. Official target/kernel feed
+          is disabled because NSS changes the kernel ABI. PassWall2 needs its
+          project's compatible third-party source.
+          Layout: Athena eMMC 0:HLOS + rootfs. The owner's stock JDCOS GPT has
+          not been read: verify it before first flash. Hardware boot/NSS must
+          still be tested. Read factory/sysupgrade/initramfs instructions before use.
+          Default address: 192.168.1.1; configure a password after installation.
+          EOF
+          (cd artifacts/firmware && sha256sum * > SHA256SUMS)
+          echo 'Athena: formal ImmortalWrt 25.12.2 baseline + NSS compiled and verified; hardware validation pending.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Athena-stable-NSS-diagnostics-${{ github.run_number }}
+          path: artifacts/diagnostics/
+          retention-days: 30
+      - name: Publish verified firmware
+        uses: ncipollo/release-action@v1
+        with:
+          tag: JDCloud-25.12.2-NSS-${{ github.run_number }}
+          name: Athena ImmortalWrt 25.12.2 + NSS
+          commit: ${{ github.sha }}
+          artifacts: artifacts/firmware/*
+          body: |
+            京东云雅典娜 RE-CS-02，基于 ImmortalWrt v25.12.2 正式版的 NSS 定制固件，Linux 6.12.103。
+            正式版源码 4fc16f2985a358bd43bb522e43f05395fcbd6ed5；NSS donor 0a98e096208584bf90982f59f6d5a43f89443276。
+            NSS/ECM、PPPoE、桥接/VLAN、ath11k Wi-Fi NSS；内置 cpufreq、DDNS、UPnP、WoL。
+            不包含 PassWall2、Xray、Sing-Box、frpc/frps，不发布可选软件包合集。
+            APK 保留官方 25.12.2 用户态源，NSS 内核 ABI 与官方 kmod 不兼容。PassWall2 需其项目源。
+            包含 factory、sysupgrade、initramfs 镜像；实机验证尚未完成，首次刷机前核对官方 GPT。
+            构建记录：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            详见 READ-ME.txt、SOURCES.txt、manifest、配置、SHA256SUMS。

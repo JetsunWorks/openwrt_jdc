@@ -25,7 +25,14 @@
 - 添加或修改 `xx.yml` 文件，最后点击 `Actions` 运行要编译的 `workflow` 即可开始编译。
 - 编译大概需要 1-2 小时，编译完成后在仓库主页 [Releases](https://github.com/laipeng668/openwrt-ci-roc/releases) 对应 Tag 标签内下载固件。
 
+## 雅典娜正式版 NSS 构建
+- `JDCloud-ImmortalWrt` 使用官方 `v25.12.2` 标签（提交 `4fc16f2985a358bd43bb522e43f05395fcbd6ed5`）及 Linux `6.12.103`，选择性移植固定来源的 NSS、Wi-Fi 和 RE-CS-02 支持。属于基于正式版的 NSS 定制固件。
+- 配置为 `configs/JDCloud-Stable.config` 加 `configs/Stable-General.config`；内置 cpufreq、DDNS、UPnP、WoL，不内置 PassWall2 或 frpc/frps，不构建可选软件包合集。
+- 默认管理地址为 `192.168.1.1`。APK 保留官方 25.12.2 用户态源；NSS 内核 ABI 不同，官方目标/kmod 源禁用。PassWall2 需要其项目提供的兼容源。
+- 固件校验通过后发布到 `JDCloud-25.12.2-NSS-*`，附带源码、配置、manifest 和 SHA256 记录。实机验证另行进行，首次刷机前应核对官方系统的 eMMC GPT。
+
 ## 单独编译软件包
+- 本节的稳定版 SDK 仅用于编译软件包，不决定其他整机固件工作流的源码版本。
 - 点击 `Actions` 运行 `Build-Packages`，`sdk_version` 可选择 `ALL` 同时编译全部版本，或选择 `main` 主线 snapshots、`23.05`、`24.10`、`25.12` 系列的最新稳定版 SDK。
 - 默认同时编译 `x86-64` 和 `aarch64` 两个架构：`x86/64` 使用 `configs/x86-64.config + configs/Packages.config`；`aarch64` 在 `main`、`25.12` 使用 `configs/JDCloud.config + configs/Packages.config`，在 `23.05`、`24.10` 使用 SDK 脚本内置的 rax3000m 配置 + `configs/Packages.config`。
 - `package` 默认是 `ALL`，下拉只保留独立软件包 `nginx`，以及 `luci-app-aria2`、`luci-app-frpc`、`luci-app-frps`、`luci-app-gecoosac`、`luci-app-lucky`、`luci-app-openlist2`、`luci-theme-argon`、`luci-theme-aurora` 这些 LuCI 入口；选择 LuCI 软件包时会同时编译并发布对应基础包或主题配置插件，其中 `luci-app-aria2` 会一并处理 `aria2` 和 `ariang`。旧的 `aria2`、`ariang`、`frp`、`gecoosac`、`lucky`、`openlist2` 输入仅作为兼容别名保留。
