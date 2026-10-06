@@ -1,0 +1,231 @@
+name: AX3600-ImmortalWrt
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/stable-router-builds
+    paths:
+      - '.github/workflows/AX3600-ImmortalWrt.yml'
+      - 'configs/AX3600-Stable.config'
+      - 'configs/Stable-General.config'
+      - 'scripts/prepare-stable-nss.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ax3600-stable-nss-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_PATH: /mnt/immortalwrt-stable
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: Xiaomi AX3600 / ImmortalWrt 25.12.2 + NSS / Linux 6.12.103
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev libelf-dev zlib1g-dev liblzma-dev python3 python3-setuptools python3-pyelftools rsync swig unzip file wget curl ca-certificates time ccache zstd device-tree-compiler quilt patch pkgconf jq
+          sudo mkdir -p "$SOURCE_PATH"
+          sudo chown "$(id -u):$(id -g)" "$SOURCE_PATH"
+          mkdir -p artifacts/firmware artifacts/diagnostics
+          df -h "$SOURCE_PATH"
+
+      - name: Port pinned NSS and AX3600 support onto the formal release
+        run: bash scripts/prepare-stable-nss.sh "$SOURCE_PATH"
+
+      - name: Install pinned release feeds and NSS feed
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          for feed in feeds/*; do
+            if [[ -d "$feed/.git" ]]; then
+              printf '%s %s\n' "$feed" "$(git -C "$feed" rev-parse HEAD)"
+            fi
+          done >> "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt"
+
+      - name: Configure and verify requested packages
+        run: |
+          set -euo pipefail
+          cat configs/AX3600-Stable.config configs/Stable-General.config > "$SOURCE_PATH/.config"
+          cp "$SOURCE_PATH/.config" artifacts/diagnostics/config.seed
+          cd "$SOURCE_PATH"
+          make defconfig
+          cp .config "$GITHUB_WORKSPACE/artifacts/diagnostics/config.full"
+          ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/artifacts/diagnostics/config.diff"
+          missing=0
+          while IFS= read -r requested; do
+            if [[ "$requested" == CONFIG_*=y ]]; then
+              grep -Fxq "$requested" .config || { echo "Dropped requested option: $requested"; missing=1; }
+            fi
+          done < "$GITHUB_WORKSPACE/artifacts/diagnostics/config.seed"
+          test "$missing" -eq 0
+          if grep -Eq '^CONFIG_PACKAGE_.*=m$' .config; then
+            echo 'Unexpected optional/module package selection:'
+            grep -E '^CONFIG_PACKAGE_.*=m$' .config
+            exit 1
+          fi
+          grep -Fxq 'CONFIG_USE_APK=y' .config
+          grep -Fxq 'CONFIG_VERSION_NUMBER="25.12.2-nss"' .config
+          grep -Fxq 'CONFIG_TARGET_DEVICE_qualcommax_ipq807x_DEVICE_xiaomi_ax3600=y' .config
+          ! grep -Eq '^CONFIG_TARGET_DEVICE_qualcommax_ipq807x_DEVICE_xiaomi_ax3600-stock=y$' .config
+          ! grep -Eq '^CONFIG_PACKAGE_(luci-app-athena-led|luci-i18n-athena-led-zh-cn|luci-app-passwall2|xray-core|sing-box|frpc|frps|luci-app-frpc|luci-app-frps)=[ym]$' .config
+          if grep -Eq '^CONFIG_PACKAGE_(kmod-nft-compat|kmod-nf-ipt)=[ym]$' .config; then
+            echo 'Unexpected legacy nft/iptables compatibility package selected.'
+            exit 1
+          fi
+          cp .config "$GITHUB_WORKSPACE/artifacts/diagnostics/config.full"
+          ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/artifacts/diagnostics/config.diff"
+          cp "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt" files/etc/nss-build-info
+
+      - name: Download sources
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          make download -j8 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/download.log"
+
+      - name: Validate patches against Linux 6.12.103
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          make target/linux/prepare -j"$(nproc)" V=s 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/kernel-prepare.log"
+
+      - name: Build firmware
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          if ! make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/build.log"; then
+            make -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/diagnostics/build-retry.log"
+          fi
+
+      - name: Verify firmware and collect safe layout-specific outputs
+        run: |
+          set -euo pipefail
+          image_dir="$SOURCE_PATH/bin/targets/qualcommax/ipq807x"
+          python3 - "$image_dir" <<'PY'
+          import json, pathlib, sys
+
+          root = pathlib.Path(sys.argv[1])
+          metadata = json.loads((root / 'profiles.json').read_text())
+          assert metadata['version_number'] == '25.12.2-nss', metadata.get('version_number')
+          profile = metadata['profiles']['xiaomi_ax3600']
+          assert any(image['type'] == 'sysupgrade' for image in profile['images']), profile['images']
+
+          manifests = list(root.glob('*.manifest'))
+          assert len(manifests) == 1, manifests
+          lines = manifests[0].read_text().splitlines()
+          packages = {line.split(' - ')[0] for line in lines}
+          required = {
+              'kmod-qca-nss-drv', 'kmod-qca-nss-dp', 'kmod-qca-nss-ecm',
+              'kmod-qca-nss-crypto', 'kmod-qca-nss-drv-bridge-mgr',
+              'kmod-qca-nss-drv-vlan-mgr', 'kmod-qca-nss-drv-pppoe',
+              'kmod-qca-nss-drv-qdisc', 'kmod-qca-nss-drv-igs', 'kmod-nss-ifb',
+              'nss-firmware-ipq807x',
+              'kmod-ath11k', 'ipq-wifi-xiaomi_ax3600',
+              'luci-app-cpufreq', 'luci-i18n-cpufreq-zh-cn',
+              'luci-app-uhttpd', 'luci-app-ddns', 'luci-i18n-ddns-zh-cn',
+              'luci-app-upnp', 'luci-i18n-upnp-zh-cn',
+              'luci-app-wol', 'luci-i18n-wol-zh-cn',
+              'luci-app-nlbwmon', 'luci-i18n-nlbwmon-zh-cn',
+              'tmux', 'htop', 'btop', 'nano-full', 'apk-mbedtls',
+              'kmod-nft-tproxy', 'kmod-nft-socket', 'kmod-tun',
+          }
+          assert required <= packages, required - packages
+          forbidden = {
+              'luci-app-athena-led', 'luci-i18n-athena-led-zh-cn',
+              'luci-app-passwall2', 'xray-core', 'sing-box',
+              'frpc', 'frps', 'luci-app-frpc', 'luci-app-frps',
+              'kmod-nft-compat', 'kmod-nf-ipt',
+          }
+          assert not forbidden & packages, forbidden & packages
+          kernels = [line for line in lines if line.startswith('kernel - ')]
+          assert len(kernels) == 1 and '6.12.103' in kernels[0], kernels
+
+          sysupgrade = [p for p in root.iterdir()
+                        if p.is_file() and 'xiaomi_ax3600' in p.name and p.name.endswith('-sysupgrade.bin')]
+          factory = [p for p in root.iterdir()
+                     if p.is_file() and 'xiaomi_ax3600' in p.name and p.name.endswith('-factory.ubi') and 'initramfs' not in p.name]
+          rescue = [p for p in root.iterdir()
+                    if p.is_file() and 'xiaomi_ax3600' in p.name and 'initramfs' in p.name and p.suffix == '.ubi']
+          assert len(sysupgrade) == 1, sysupgrade
+          assert len(factory) == 1, factory
+          assert len(rescue) == 1, rescue
+          assert not any('xiaomi_ax3600-stock' in p.name for p in root.iterdir()), 'stock-layout output found'
+          print('Verified ImmortalWrt 25.12.2, Linux 6.12.103, AX3600 expanded-layout factory/sysupgrade/rescue, NSS and package selections.')
+          PY
+
+          cp "$SOURCE_PATH/.config" artifacts/firmware/AX3600.config
+          cp "$image_dir"/*.manifest artifacts/firmware/AX3600.manifest
+          cp "$image_dir/profiles.json" "$image_dir/version.buildinfo" artifacts/firmware/
+          cp artifacts/diagnostics/SOURCES.txt artifacts/diagnostics/config.diff artifacts/firmware/
+          python3 - "$image_dir" artifacts/firmware <<'PY'
+          import pathlib, shutil, sys
+          image_dir, out_dir = map(pathlib.Path, sys.argv[1:])
+          selected = []
+          selected += [p for p in image_dir.iterdir()
+                       if p.is_file() and 'xiaomi_ax3600' in p.name and p.name.endswith('-sysupgrade.bin')]
+          selected += [p for p in image_dir.iterdir()
+                       if p.is_file() and 'xiaomi_ax3600' in p.name and p.name.endswith('-factory.ubi') and 'initramfs' not in p.name]
+          selected += [p for p in image_dir.iterdir()
+                       if p.is_file() and 'xiaomi_ax3600' in p.name and 'initramfs' in p.name and p.suffix == '.ubi']
+          for path in selected:
+              shutil.copy2(path, out_dir / path.name)
+          if len(selected) != 3:
+              raise SystemExit(f'Expected exactly factory, sysupgrade and initramfs recovery outputs; got {[p.name for p in selected]}')
+          PY
+          cat > artifacts/firmware/READ-ME.txt <<'EOF'
+          Xiaomi AX3600: custom NSS firmware based on ImmortalWrt v25.12.2, Linux 6.12.103.
+          Only the xiaomi_ax3600 OpenWrt-expanded partition profile is built. The xiaomi_ax3600-stock profile and its images are excluded.
+          Published images: the profile-specific factory.ubi, sysupgrade.bin and initramfs-factory.ubi recovery image. All three are built for the expanded-layout profile.
+          The chenxin527 U-Boot project lists AX3600 and documents NAND Factory UBI support; it does not support flashing a Sysupgrade archive itself. Use factory.ubi only via the documented U-Boot method, and sysupgrade.bin only from a running compatible OpenWrt installation. The initramfs image is for recovery. Bootloader-specific flashing has not been tested on the owner's router.
+          Never write these images directly to arbitrary MTD partitions. Confirm the exact partition layout and image purpose before flashing.
+          Built-ins match the Athena build's general package set: cpufreq, DDNS, UPnP, WoL, Netlink Bandwidth Monitor, uhttpd LuCI, tmux, htop, btop, nano, TUN and nftables tproxy/socket support. Athena LED control and its Chinese translation are omitted. Other common Chinese LuCI translations are retained.
+          PassWall2, Xray, Sing-Box, frpc/frps and optional-package bundles are not included.
+          APK user-space sources use the official ImmortalWrt 25.12.2 release. Official kernel/module feeds are disabled because NSS changes the kernel ABI; do not install official kmods over this kernel.
+          NSS uses the selected IPQ807x 11.4 firmware profile. NSS throughput, Wi-Fi stability, U-Boot recovery and flashing still need real-device validation.
+          Default address: 192.168.1.1. Set an administrator password after installation.
+          EOF
+          (cd artifacts/firmware && sha256sum * > SHA256SUMS)
+          echo 'AX3600 build verified against the xiaomi_ax3600 expanded-layout profile; no stock image or optional package bundle was published.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AX3600-stable-NSS-diagnostics-${{ github.run_number }}
+          path: artifacts/diagnostics/
+          retention-days: 30
+
+      - name: Publish verified firmware
+        uses: ncipollo/release-action@v1
+        with:
+          tag: AX3600-25.12.2-NSS-${{ github.run_number }}
+          name: Xiaomi AX3600 ImmortalWrt 25.12.2 + NSS
+          commit: ${{ github.sha }}
+          artifacts: artifacts/firmware/*
+          body: |
+            小米 AX3600，基于 ImmortalWrt v25.12.2 正式版的 NSS 定制固件，Linux 6.12.103。
+            仅构建 `xiaomi_ax3600` OpenWrt 扩容分区布局；不包含 `xiaomi_ax3600-stock` 镜像。发布 Factory UBI、sysupgrade 和 initramfs 恢复镜像。
+            软件包与雅典娜通用集相同；省略雅典娜 LED 插件及其中文翻译。PassWall2、Xray、Sing-Box、frpc/frps 和可选软件包合集均不包含。
+            保留官方 25.12.2 用户态 APK 源；因 NSS 内核 ABI 已修改，官方 kmod 源不可用于内核模块。
+            chenxin527 U-Boot 项目列出 AX3600 并说明支持 NAND Factory UBI，但它不能通过 U-Boot 刷 sysupgrade；设备实测与本机刷写尚未验证。请先阅读 READ-ME.txt 并核对设备分区布局。
+            构建记录：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            附带配置、manifest、源代码版本和 SHA256 校验和。

@@ -31,6 +31,12 @@
 - 默认管理地址为 `192.168.1.1`。APK 保留官方 25.12.2 用户态源；NSS 内核 ABI 不同，官方目标/kmod 源禁用。PassWall2 需要其项目提供的兼容源。
 - 固件校验通过后发布到 `JDCloud-25.12.2-NSS-*`，附带源码、配置、manifest 和 SHA256 记录。实机验证另行进行，首次刷机前应核对官方系统的 eMMC GPT。
 
+## 小米 AX3600 正式版 NSS 构建
+- `AX3600-ImmortalWrt` 使用相同的 ImmortalWrt `v25.12.2` 稳定版基线、Linux `6.12.103` 和固定 NSS 移植脚本。
+- 只构建 `xiaomi_ax3600` OpenWrt 扩容分区布局，不构建 `xiaomi_ax3600-stock`。发布 Factory UBI、sysupgrade 与 initramfs 恢复镜像。chenxin527 U-Boot 文档支持 AX3600 和 NAND Factory UBI，但不支持通过 U-Boot 刷 sysupgrade。
+- 软件包沿用 `configs/Stable-General.config`，包括 cpufreq、DDNS、UPnP、WoL、nlbwmon、uhttpd LuCI、tmux、htop、btop、nano 和 nftables/tun 支持；不包含雅典娜 LED 及其中文翻译、PassWall2、Xray、Sing-Box、frpc/frps 或可选软件包合集。
+- 官方 25.12.2 用户态 APK 源保留；因 NSS 内核 ABI 不同，官方 kmod 源禁用。特定 U-Boot 和设备分区的实机刷写尚未验证，刷机前请核对发布包内 READ-ME.txt。
+
 ## 单独编译软件包
 - 本节的稳定版 SDK 仅用于编译软件包，不决定其他整机固件工作流的源码版本。
 - 点击 `Actions` 运行 `Build-Packages`，`sdk_version` 可选择 `ALL` 同时编译全部版本，或选择 `main` 主线 snapshots、`23.05`、`24.10`、`25.12` 系列的最新稳定版 SDK。
