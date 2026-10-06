@@ -27,7 +27,7 @@
 
 ## 雅典娜正式版 NSS 构建
 - `JDCloud-ImmortalWrt` 使用官方 `v25.12.2` 标签（提交 `4fc16f2985a358bd43bb522e43f05395fcbd6ed5`）及 Linux `6.12.103`，选择性移植固定来源的 NSS、Wi-Fi 和 RE-CS-02 支持。属于基于正式版的 NSS 定制固件。
-- 配置为 `configs/JDCloud-Stable.config` 加 `configs/Stable-General.config`；内置 cpufreq、DDNS、UPnP、WoL，不内置 PassWall2 或 frpc/frps，不构建可选软件包合集。
+- 配置为 `configs/JDCloud-Stable.config` 加 `configs/Stable-General.config`；内置雅典娜 LED 控制（固定使用 NONGFAH 插件提交 `564942b`）、luci-app-uhttpd、tmux、htop、btop、nano、cpufreq、DDNS、UPnP、WoL 和 nlbwmon，不内置 PassWall2 或 frpc/frps，不构建可选软件包合集。
 - 默认管理地址为 `192.168.1.1`。APK 保留官方 25.12.2 用户态源；NSS 内核 ABI 不同，官方目标/kmod 源禁用。PassWall2 需要其项目提供的兼容源。
 - 固件校验通过后发布到 `JDCloud-25.12.2-NSS-*`，附带源码、配置、manifest 和 SHA256 记录。实机验证另行进行，首次刷机前应核对官方系统的 eMMC GPT。
 

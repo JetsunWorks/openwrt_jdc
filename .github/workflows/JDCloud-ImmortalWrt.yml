@@ -38,6 +38,19 @@ jobs:
           df -h "$SOURCE_PATH"
       - name: Port pinned NSS and Athena support onto the formal release
         run: bash scripts/prepare-stable-nss.sh "$SOURCE_PATH"
+      - name: Add the pinned Athena LED LuCI package
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_PATH"
+          led_sha=564942b48406d09527901b4732dbd1eaac7e66f5
+          git clone https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
+          git -C package/luci-app-athena-led checkout --detach "$led_sha"
+          test "$(git -C package/luci-app-athena-led rev-parse HEAD)" = "$led_sha"
+          grep -Fq 'PKG_NAME:=luci-app-athena-led' package/luci-app-athena-led/Makefile
+          chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led \
+            package/luci-app-athena-led/root/usr/sbin/athena-led
+          printf 'Athena LED package: https://github.com/NONGFAH/luci-app-athena-led @ %s\n' "$led_sha" \
+            >> "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt"
       - name: Install pinned release feeds and NSS feed
         run: |
           set -euo pipefail
@@ -118,7 +131,9 @@ jobs:
               'ath11k-firmware-ipq6018', 'ath11k-firmware-qcn9074',
               'ipq-wifi-jdcloud_re-cs-02', 'luci-app-cpufreq', 'luci-app-ddns',
               'luci-app-upnp', 'luci-app-wol', 'luci-app-nlbwmon',
-              'luci-i18n-nlbwmon-zh-cn', 'apk-mbedtls',
+              'luci-i18n-nlbwmon-zh-cn', 'luci-app-athena-led',
+              'luci-i18n-athena-led-zh-cn', 'luci-app-uhttpd', 'tmux',
+              'htop', 'btop', 'nano-full', 'apk-mbedtls',
               'kmod-nft-tproxy', 'kmod-nft-socket', 'kmod-tun'}
           assert required <= packages, required - packages
           forbidden = {'frpc','frps','luci-app-frpc','luci-app-frps','luci-app-passwall2','xray-core','sing-box','kmod-nft-compat','kmod-nf-ipt'}
@@ -138,7 +153,7 @@ jobs:
           Formal release userspace/feeds and Linux 6.12.103 are retained.
           NSS, Wi-Fi backports 7.2, matched firmware and board support are ported
           from the fixed donor recorded in SOURCES.txt, not a relabeled Snapshot.
-          Built-ins: cpufreq, DDNS, UPnP, WoL, Netlink Bandwidth Monitor, NSS and native nftables proxy prerequisites.
+          Built-ins: Athena LED control, uhttpd LuCI app, tmux, htop, btop, nano, cpufreq, DDNS, UPnP, WoL, Netlink Bandwidth Monitor and NSS.
           PassWall2, Xray, Sing-Box, frpc/frps are not included.
           No optional-package bundle is compiled or published.
           APK uses official 25.12.2 userspace feeds. Official target/kernel feed
@@ -153,7 +168,7 @@ jobs:
           Default address: 192.168.1.1; configure a password after installation.
           EOF
           (cd artifacts/firmware && sha256sum * > SHA256SUMS)
-          echo 'Athena: formal ImmortalWrt 25.12.2 baseline + NSS compiled and verified; hardware validation pending.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Athena: formal ImmortalWrt 25.12.2 baseline + NSS and requested LED/admin packages compiled and verified; hardware validation pending.' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -171,7 +186,7 @@ jobs:
           body: |
             京东云雅典娜 RE-CS-02，基于 ImmortalWrt v25.12.2 正式版的 NSS 定制固件，Linux 6.12.103。
             正式版源码 4fc16f2985a358bd43bb522e43f05395fcbd6ed5；NSS donor 0a98e096208584bf90982f59f6d5a43f89443276。
-            NSS/ECM、PPPoE、桥接/VLAN、ath11k Wi-Fi NSS；内置 cpufreq、DDNS、UPnP、WoL。
+            NSS/ECM、PPPoE、桥接/VLAN、ath11k Wi-Fi NSS；内置雅典娜 LED 控制、luci-app-uhttpd、tmux、htop、btop、nano、cpufreq、DDNS、UPnP、WoL。
             内置 luci-app-nlbwmon。PassWall2、Xray、Sing-Box、frpc/frps 不包含，不发布可选软件包合集。
             APK 保留官方 25.12.2 用户态源，NSS 内核 ABI 与官方 kmod 不兼容。PassWall2 需其项目源。
             内置 nft tproxy/socket 与 tun；省略旧式 nft/iptables compat，避免打包缺失的 ip_tables.ko。
