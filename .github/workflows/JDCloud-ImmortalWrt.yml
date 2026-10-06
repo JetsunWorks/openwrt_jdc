@@ -113,7 +113,8 @@ jobs:
           lines = manifests[0].read_text().splitlines()
           packages = {line.split(' - ')[0] for line in lines}
           required = {'kmod-qca-nss-drv', 'kmod-qca-nss-ecm', 'kmod-qca-nss-dp',
-              'nss-firmware-ipq60xx', 'kmod-ath11k', 'kmod-ath11k-pci',
+              'nss-firmware-ipq60xx', 'kmod-ath11k', 'kmod-ath11k-ahb',
+              'kmod-ath11k-pci',
               'ath11k-firmware-ipq6018', 'ath11k-firmware-qcn9074',
               'ipq-wifi-jdcloud_re-cs-02', 'luci-app-cpufreq', 'luci-app-ddns',
               'luci-app-upnp', 'luci-app-wol', 'luci-app-nlbwmon',
