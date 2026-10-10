@@ -64,21 +64,15 @@ needle = 'define collect_module_symvers\n'
 assert text.count(needle) == 1
 kernel_mk.write_text(text.replace(needle, needle + '\t: > $(PKG_BUILD_DIR)/Module.symvers.tmp; \\\n', 1))
 
-# Keep official user-space APK feeds, but never offer official kernel modules
-# for a kernel whose ABI is modified by NSS. All required NSS/proxy modules are
-# built into this image; adding another kernel module requires a matching build.
-defaults = root / 'files/etc/uci-defaults'
-defaults.mkdir(parents=True, exist_ok=True)
-hook = defaults / '99-nss-release-feeds'
-hook.write_text('''#!/bin/sh
-for list in /etc/apk/repositories.d/*.list; do
-    [ -f "$list" ] || continue
-    sed -i '\\|^[^#].*/targets/qualcommax/|s|^|# NSS kernel ABI: |' "$list"
-done
-exit 0
-''')
-hook.chmod(0o755)
 PY
+
+# Keep official user-space APK feeds, disable incompatible target kmods, and
+# enable the image-installed LED service. These scripts are checked in as
+# regular files so their syntax can be tested independently.
+install -D -m 0755 "$BUILDER_ROOT/scripts/uci-defaults/99-nss-release-feeds" \
+  "$SOURCE_DIR/files/etc/uci-defaults/99-nss-release-feeds"
+install -D -m 0755 "$BUILDER_ROOT/scripts/uci-defaults/99-athena-led" \
+  "$SOURCE_DIR/files/etc/uci-defaults/99-athena-led"
 
 # These files must remain byte-identical to the formal release.
 for release_file in include/version.mk target/linux/generic/kernel-6.12; do
@@ -101,3 +95,4 @@ mkdir -p "$BUILDER_ROOT/artifacts/diagnostics"
 } > "$BUILDER_ROOT/artifacts/diagnostics/SOURCES.txt"
 git diff --binary > "$BUILDER_ROOT/artifacts/diagnostics/stable-nss-port.patch"
 cp feeds.conf.default "$BUILDER_ROOT/artifacts/diagnostics/feeds.conf"
+

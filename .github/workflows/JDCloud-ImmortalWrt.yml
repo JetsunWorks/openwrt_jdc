@@ -8,6 +8,8 @@ on:
       - .github/workflows/JDCloud-ImmortalWrt.yml
       - configs/JDCloud-Stable.config
       - scripts/prepare-stable-nss.sh
+      - scripts/uci-defaults/**
+      - patches/athena-led/**
   workflow_dispatch:
   workflow_call:
 
@@ -45,27 +47,50 @@ jobs:
           df -h "$SOURCE_PATH"
       - name: Port pinned NSS and Athena support onto the formal release
         run: bash scripts/prepare-stable-nss.sh "$SOURCE_PATH"
-      - name: Add pinned Athena LED v2.4.0 core and LuCI JS packages
+      - name: Set up Rust and Zig cross-build tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v2
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Patch and build pinned Athena LED v2.4.0 core
         run: |
           set -euo pipefail
           led_sha=a0eae21dc1119a56aaf8633c610af03a92f7493c
-          led_binary_sha=243560a5e6bb52e5a493f7efa528771a6ab26e325a69b6e1d9d89647eaac5f3f
           led_checkout="$RUNNER_TEMP/athena-led-controller"
           git clone --quiet https://github.com/unraveloop/JDC-AX6600-Athena-LED-Controller.git "$led_checkout"
           git -C "$led_checkout" checkout --quiet --detach "$led_sha"
           test "$(git -C "$led_checkout" rev-parse HEAD)" = "$led_sha"
+          git -C "$led_checkout" apply --unidiff-zero --check "$GITHUB_WORKSPACE/patches/athena-led/0001-ipinfo-cipcc-fallback.patch"
+          git -C "$led_checkout" apply --unidiff-zero "$GITHUB_WORKSPACE/patches/athena-led/0001-ipinfo-cipcc-fallback.patch"
+          git -C "$led_checkout" diff --check
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/athena-led-target"
+          cargo test --locked --manifest-path "$led_checkout/athena-led/Cargo.toml"
+          cargo zigbuild --locked --release --target aarch64-unknown-linux-musl \
+            --manifest-path "$led_checkout/athena-led/Cargo.toml"
           test ! -e "$SOURCE_PATH/package/athena-led"
           test ! -e "$SOURCE_PATH/package/luci-app-athena-led"
+          led_pkg_source=$(sed -n 's/^PKG_SOURCE:=//p' "$led_checkout/athena-led/Makefile")
+          test -n "$led_pkg_source"
+          mkdir -p "$SOURCE_PATH/dl" "$RUNNER_TEMP/athena-led-package"
+          cp "$CARGO_TARGET_DIR/aarch64-unknown-linux-musl/release/athena-led" \
+            "$RUNNER_TEMP/athena-led-package/athena-led"
+          tar -czf "$SOURCE_PATH/dl/$led_pkg_source" -C "$RUNNER_TEMP/athena-led-package" athena-led
+          led_binary_sha=$(sha256sum "$SOURCE_PATH/dl/$led_pkg_source" | cut -d' ' -f1)
           cp -a "$led_checkout/athena-led" "$SOURCE_PATH/package/athena-led"
           cp -a "$led_checkout/luci-app-athena-led" "$SOURCE_PATH/package/luci-app-athena-led"
           sed -i "s/^PKG_HASH:=skip$/PKG_HASH:=$led_binary_sha/" "$SOURCE_PATH/package/athena-led/Makefile"
+          sed -i 's/^PKG_RELEASE:=1$/PKG_RELEASE:=2/' "$SOURCE_PATH/package/athena-led/Makefile"
           grep -Fxq 'PKG_VERSION:=2.4.0' "$SOURCE_PATH/package/athena-led/Makefile"
           grep -Fxq "PKG_HASH:=$led_binary_sha" "$SOURCE_PATH/package/athena-led/Makefile"
+          grep -Fxq 'PKG_RELEASE:=2' "$SOURCE_PATH/package/athena-led/Makefile"
           grep -Fq 'PKG_NAME:=luci-app-athena-led' "$SOURCE_PATH/package/luci-app-athena-led/Makefile"
           grep -Fq 'DEPENDS:=+athena-led +luci-base' "$SOURCE_PATH/package/luci-app-athena-led/Makefile"
           ! grep -Fq 'require luci.cbi' "$SOURCE_PATH/package/luci-app-athena-led/htdocs/luci-static/resources/view/athena_led/settings.js"
           printf 'Athena LED source: https://github.com/unraveloop/JDC-AX6600-Athena-LED-Controller @ %s\n' "$led_sha" >> "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt"
           printf 'Athena LED core archive SHA256: %s\n' "$led_binary_sha" >> "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt"
+          printf 'Athena LED patch: patches/athena-led/0001-ipinfo-cipcc-fallback.patch\n' >> "$GITHUB_WORKSPACE/artifacts/diagnostics/SOURCES.txt"
       - name: Install pinned release feeds and NSS feed
         run: |
           set -euo pipefail
@@ -172,6 +197,8 @@ jobs:
           from the fixed donor recorded in SOURCES.txt, not a relabeled Snapshot.
           Built-ins: Athena LED v2.4.0 (athena-led core + LuCI JS UI), uhttpd LuCI app, tmux, htop, btop, nano, cpufreq, DDNS, UPnP, WoL, Netlink Bandwidth Monitor and NSS.
           Athena LED uses the JS UI and embeds its translations; it no longer calls the unavailable luci.cbi module.
+          Athena LED location lookup uses ipinfo.io with cip.cc as a city fallback; the stale ip-api.com request was removed. Its service is enabled during first boot.
+          The missing video APK index is removed from the repository lists during first boot.
           PassWall2, Xray, Sing-Box, frpc/frps are not included.
           No optional-package bundle is compiled or published.
           APK update uses ImmortalWrt 25.12.2 userspace repositories. A router-side "Operation not permitted" while opening HTTPS occurs before index download and needs local WAN/DNS/routing/firewall diagnosis; rebuilding alone cannot guarantee that network fault is fixed.
@@ -212,3 +239,4 @@ jobs:
             包含 factory、sysupgrade、initramfs 镜像；实机验证尚未完成，首次刷机前核对官方 GPT。
             构建记录：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
             详见 READ-ME.txt、SOURCES.txt、manifest、配置、SHA256SUMS。
+

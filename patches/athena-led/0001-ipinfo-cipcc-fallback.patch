@@ -1,0 +1,220 @@
+diff --git a/athena-led/files/athena_led.config b/athena-led/files/athena_led.config
+index 40a11ff..af84d0c 100644
+--- a/athena-led/files/athena_led.config
++++ b/athena-led/files/athena_led.config
+@@ -2 +2 @@ config settings 'general'
+-    option enabled '0'
++    option enabled '1'
+diff --git a/athena-led/src/net_agent.rs b/athena-led/src/net_agent.rs
+index b02e4b7..5b30aec 100644
+--- a/athena-led/src/net_agent.rs
++++ b/athena-led/src/net_agent.rs
+@@ -164,11 +164,64 @@ impl NetHandle {
+-// 从 JSON 文本中提取数字字段 (轻量解析，无需完整反序列化)
+-fn extract_json_number(text: &str, key: &str) -> Option<f64> {
+-    let pattern = format!("\"{}\"", key);
+-    let after = text.split(&pattern).nth(1)?;
+-    let after_colon = after.split(':').nth(1)?;
+-    let num_str: String = after_colon
+-        .trim_start()
+-        .chars()
+-        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+-        .collect();
+-    num_str.parse().ok()
++#[derive(Debug, Default, PartialEq)]
++struct GeoLocation {
++    city: Option<String>,
++    coords: Option<(f64, f64)>,
++}
++
++fn valid_coordinates(lat: f64, lon: f64) -> Option<(f64, f64)> {
++    if lat.is_finite()
++        && lon.is_finite()
++        && (-90.0..=90.0).contains(&lat)
++        && (-180.0..=180.0).contains(&lon)
++    {
++        Some((lat, lon))
++    } else {
++        None
++    }
++}
++
++fn parse_coordinate_pair(value: &str) -> Option<(f64, f64)> {
++    let (lat, lon) = value.trim().split_once(',')?;
++    valid_coordinates(lat.trim().parse().ok()?, lon.trim().parse().ok()?)
++}
++
++fn parse_ipinfo_location(text: &str) -> Option<GeoLocation> {
++    let data: Value = serde_json::from_str(text).ok()?;
++    let city = data
++        .get("city")
++        .and_then(Value::as_str)
++        .map(str::trim)
++        .filter(|city| !city.is_empty())
++        .map(str::to_owned);
++    let coords = data
++        .get("loc")
++        .and_then(Value::as_str)
++        .and_then(parse_coordinate_pair)
++        .or_else(|| {
++            let lat = data.get("lat")?.as_f64()?;
++            let lon = data.get("lon")?.as_f64()?;
++            valid_coordinates(lat, lon)
++        });
++
++    if city.is_none() && coords.is_none() {
++        return None;
++    }
++
++    Some(GeoLocation { city, coords })
++}
++
++fn parse_cip_cc_city(text: &str) -> Option<String> {
++    let address = text.lines().find_map(|line| {
++        let (key, value) = line.split_once(':')?;
++        (key.trim() == "地址").then_some(value.trim())
++    })?;
++    let city = address
++        .split_whitespace()
++        .last()?
++        .trim_end_matches('市')
++        .trim();
++
++    if city.is_empty() || city == "中国" {
++        None
++    } else {
++        Some(city.to_string())
++    }
+@@ -351,2 +404,3 @@ impl NetAgent {
+-    // 🌍 IP 自动定位 (双源: 紫辰 主 / ip-api.com 备)
+-    // 同时提取城市名 (天气用) 与经纬度 (日出日落用)；
++    // 🌍 IP 自动定位 (ipinfo.io 主 / cip.cc 备)
++    // 同时提取城市名 (天气用) 与经纬度 (日出日落用)。
++    // cip.cc 只提供城市文本；若 ipinfo 不可用，天气仍可按城市刷新，但日出日落需要坐标。
+@@ -373,12 +427,5 @@ impl NetAgent {
+-        let geo_sources = [
+-            "http://app.zichen.zone/api/geoip/api.php",
+-            "http://ip-api.com/json/?lang=zh-CN&fields=city,lat,lon",
+-        ];
+-        for geo_url in geo_sources {
+-            match client.get(geo_url).send().await {
+-                Ok(resp) => {
+-                    if let Ok(text) = resp.text().await {
+-                        #[cfg(debug_assertions)]
+-                        println!("🌍 [定位调试] {} 原始返回: {}", geo_url, text);
+-
+-                        // 提取 city (两个接口都是 JSON 且都有 "city" 字段)
++        let ipinfo_url = "https://ipinfo.io/json";
++        match client.get(ipinfo_url).send().await {
++            Ok(resp) if resp.status().is_success() => match resp.text().await {
++                Ok(text) => match parse_ipinfo_location(&text) {
++                    Some(location) => {
+@@ -386,9 +433,3 @@ impl NetAgent {
+-                            if let Some(city_part) = text.split("\"city\"").nth(1) {
+-                                if let Some(city) = city_part.split('"').nth(1) {
+-                                    let trimmed = city.trim().to_string();
+-                                    if !trimmed.is_empty() {
+-                                        self.auto_location = trimmed;
+-                                        #[cfg(debug_assertions)]
+-                                        println!("✅ [定位成功] 城市: {}", self.auto_location);
+-                                    }
+-                                }
++                            if let Some(city) = location.city {
++                                self.auto_location = city;
++                                println!("✅ [定位] ipinfo.io 城市: {}", self.auto_location);
+@@ -397,2 +437,0 @@ impl NetAgent {
+-
+-                        // 🌟 提取经纬度 (ip-api 一定有; 其他源有则取)
+@@ -400,8 +439,3 @@ impl NetAgent {
+-                            if let (Some(lat), Some(lon)) = (
+-                                extract_json_number(&text, "lat"),
+-                                extract_json_number(&text, "lon"),
+-                            ) {
+-                                if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) {
+-                                    self.coords = Some((lat, lon));
+-                                    println!("✅ [定位] 坐标: {:.2},{:.2}", lat, lon);
+-                                }
++                            self.coords = location.coords;
++                            if let Some((lat, lon)) = self.coords {
++                                println!("✅ [定位] ipinfo.io 坐标: {:.4},{:.4}", lat, lon);
+@@ -411,6 +445,29 @@ impl NetAgent {
+-                }
+-                Err(e) => println!("❌ [定位失败] {} 请求报错: {}", geo_url, e),
+-            }
+-            // 城市和坐标都齐了就提前收工
+-            if !self.auto_location.is_empty() && self.coords.is_some() {
+-                break;
++                    None => println!("⚠️ [定位] ipinfo.io 返回内容缺少有效城市或坐标"),
++                },
++                Err(e) => println!("❌ [定位失败] ipinfo.io 响应读取失败: {}", e),
++            },
++            Ok(resp) => println!("❌ [定位失败] ipinfo.io HTTP 状态: {}", resp.status()),
++            Err(e) => println!("❌ [定位失败] ipinfo.io 请求报错: {}", e),
++        }
++
++        // cip.cc 的命令行文本响应需要 curl User-Agent；它只补充城市，不提供经纬度。
++        if self.auto_location.is_empty() {
++            let cip_url = "https://cip.cc";
++            match client
++                .get(cip_url)
++                .header(reqwest::header::USER_AGENT, "curl/8.0.0")
++                .send()
++                .await
++            {
++                Ok(resp) if resp.status().is_success() => match resp.text().await {
++                    Ok(text) => match parse_cip_cc_city(&text) {
++                        Some(city) => {
++                            self.auto_location = city;
++                            println!("✅ [定位] cip.cc 备用城市: {}", self.auto_location);
++                        }
++                        None => println!("⚠️ [定位] cip.cc 未返回可识别的地址字段"),
++                    },
++                    Err(e) => println!("❌ [定位失败] cip.cc 响应读取失败: {}", e),
++                },
++                Ok(resp) => println!("❌ [定位失败] cip.cc HTTP 状态: {}", resp.status()),
++                Err(e) => println!("❌ [定位失败] cip.cc 请求报错: {}", e),
+@@ -418,0 +476,4 @@ impl NetAgent {
++
++        if self.auto_location.is_empty() {
++            println!("❌ [定位失败] ipinfo.io 与 cip.cc 均未返回可用城市，天气将回退到默认城市");
++        }
+@@ -832,0 +894,38 @@ impl NetAgent {
++
++#[cfg(test)]
++mod geo_location_tests {
++    use super::{parse_cip_cc_city, parse_ipinfo_location};
++
++    #[test]
++    fn parses_ipinfo_city_and_loc() {
++        let location = parse_ipinfo_location(
++            r#"{"city":"Beijing","loc":"39.9075,116.3972"}"#,
++        )
++        .expect("valid ipinfo response");
++
++        assert_eq!(location.city.as_deref(), Some("Beijing"));
++        assert_eq!(location.coords, Some((39.9075, 116.3972)));
++    }
++
++    #[test]
++    fn parses_ipinfo_lat_lon_fields_as_fallback() {
++        let location = parse_ipinfo_location(r#"{"lat":39.9,"lon":116.3}"#)
++            .expect("valid coordinate response");
++
++        assert_eq!(location.coords, Some((39.9, 116.3)));
++    }
++
++    #[test]
++    fn parses_cip_cc_city_from_chinese_address() {
++        assert_eq!(
++            parse_cip_cc_city("IP : 111.193.233.171\n地址    : 中国 北京 北京\n"),
++            Some("北京".to_string())
++        );
++    }
++
++    #[test]
++    fn rejects_invalid_location_values() {
++        assert!(parse_ipinfo_location(r#"{"city":"","loc":"999,999"}"#).is_none());
++        assert!(parse_cip_cc_city("<html>no location</html>").is_none());
++    }
++}
+
