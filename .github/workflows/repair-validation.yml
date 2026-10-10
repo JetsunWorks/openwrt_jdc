@@ -1,0 +1,71 @@
+name: Router repair validation
+
+on:
+  pull_request:
+    branches:
+      - codex/stable-router-builds
+    paths:
+      - .github/workflows/repair-validation.yml
+      - .github/workflows/JDCloud-ImmortalWrt.yml
+      - patches/athena-led/**
+      - scripts/prepare-stable-nss.sh
+      - scripts/uci-defaults/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell syntax and APK feed cleanup
+        run: |
+          set -euo pipefail
+          bash -n scripts/prepare-stable-nss.sh
+          sh -n scripts/uci-defaults/99-nss-release-feeds
+          sh -n scripts/uci-defaults/99-athena-led
+          repo_list=$(mktemp)
+          trap 'rm -f "$repo_list"' EXIT
+          printf '%s\n' \
+            'src https://example.test/releases/25.12.2/packages/aarch64_cortex-a53/video/packages.adb' \
+            'src https://example.test/releases/25.12.2/packages/aarch64_cortex-a53/base/packages.adb' \
+            'src https://example.test/targets/qualcommax/ipq60xx/packages.adb' > "$repo_list"
+          sed -i '\|^[^#].*/targets/qualcommax/|s|^|# NSS kernel ABI: |' "$repo_list"
+          sed -i '/\/video\/packages\.adb/d' "$repo_list"
+          ! grep -Fq '/video/packages.adb' "$repo_list"
+          grep -Fq '/base/packages.adb' "$repo_list"
+          grep -Fq '# NSS kernel ABI: src https://example.test/targets/qualcommax/ipq60xx/packages.adb' "$repo_list"
+
+      - name: Set up Rust and Zig
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v2
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Apply the pinned Athena LED patch
+        run: |
+          set -euo pipefail
+          led_sha=a0eae21dc1119a56aaf8633c610af03a92f7493c
+          git clone --quiet https://github.com/unraveloop/JDC-AX6600-Athena-LED-Controller.git "$RUNNER_TEMP/athena-led"
+          git -C "$RUNNER_TEMP/athena-led" checkout --quiet --detach "$led_sha"
+          git -C "$RUNNER_TEMP/athena-led" apply --unidiff-zero --check "$GITHUB_WORKSPACE/patches/athena-led/0001-ipinfo-cipcc-fallback.patch"
+          git -C "$RUNNER_TEMP/athena-led" apply --unidiff-zero "$GITHUB_WORKSPACE/patches/athena-led/0001-ipinfo-cipcc-fallback.patch"
+          git -C "$RUNNER_TEMP/athena-led" diff --check
+          ! grep -R -Fq 'ip-api.com' "$RUNNER_TEMP/athena-led/athena-led/src"
+
+      - name: Test LED location parsers and build the router binary
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/athena-led-target
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/athena-led/athena-led/Cargo.toml"
+          cargo test --locked --manifest-path "$manifest"
+          cargo zigbuild --locked --release --target aarch64-unknown-linux-musl --manifest-path "$manifest"
+          test -x "$CARGO_TARGET_DIR/aarch64-unknown-linux-musl/release/athena-led"
+

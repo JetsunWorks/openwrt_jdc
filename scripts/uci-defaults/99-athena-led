@@ -1,0 +1,22 @@
+#!/bin/sh
+
+[ -f /etc/config/athena_led ] || exit 0
+
+# Migrate the legacy named section before applying the current service key.
+if ! uci -q get athena_led.general >/dev/null 2>&1; then
+    if uci -q get athena_led.config >/dev/null 2>&1; then
+        uci rename athena_led.config=general
+    else
+        uci set athena_led.general=settings
+    fi
+fi
+
+# The package is installed into the image, so its online postinst does not run.
+# Start enabled by default; the user can disable it later from LuCI or init.d.
+uci set athena_led.general.enabled=1
+uci commit athena_led
+/etc/init.d/athena_led enable
+/etc/init.d/athena_led restart >/dev/null 2>&1 || /etc/init.d/athena_led start >/dev/null 2>&1 || true
+
+exit 0
+

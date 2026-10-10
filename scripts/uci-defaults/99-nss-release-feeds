@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# NSS changes the target/kernel ABI; keep the user-space feeds available but
+# disable official qualcommax kmods. ImmortalWrt 25.12.2 has no video index.
+for list in /etc/apk/repositories /etc/apk/repositories.d/*.list; do
+    [ -f "$list" ] || continue
+    sed -i '\|^[^#].*/targets/qualcommax/|s|^|# NSS kernel ABI: |' "$list"
+    sed -i '/\/video\/packages\.adb/d' "$list"
+done
+
+exit 0
+
